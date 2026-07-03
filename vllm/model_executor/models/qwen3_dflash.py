@@ -622,5 +622,9 @@ class DFlashQwen3ForCausalLM(Qwen3ForCausalLM):
             skip_prefixes=None,
             skip_substrs=skip_substrs,
         )
+        # DFlash training checkpoints may include trainer-only vocab mapping
+        # tensors. They are not model parameters in DFlashQwen3ForCausalLM.
+        for _k in ("draft_id_to_target_id", "target_id_to_draft_id"):
+            model_weights.pop(_k, None)
         loader.load_weights(model_weights.items())
         self.model._build_fused_kv_buffers()

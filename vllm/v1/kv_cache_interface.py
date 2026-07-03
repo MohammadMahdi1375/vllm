@@ -145,7 +145,15 @@ class AttentionSpec(KVCacheSpec):
                 2 * self.block_size * self.num_kv_heads * get_dtype_size(torch.float32)
             )
         if self.page_size_padded is not None:
-            assert self.page_size_padded >= real_page_size
+            if self.page_size_padded < real_page_size:
+                logger.warning(
+                    "KV cache page_size_padded (%s) is smaller than real_page_size "
+                    "(%s) for %s; using real_page_size to avoid under-allocation.",
+                    self.page_size_padded,
+                    real_page_size,
+                    type(self).__name__,
+                )
+                return real_page_size
             return self.page_size_padded
         return real_page_size
 

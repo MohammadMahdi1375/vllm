@@ -34,6 +34,8 @@ def extract_from_kv_cache(
     Assume the shape of the kv_cache is (num_pages, page_size, num_heads, head_size)
     """
 
+    if isinstance(kv_cache, (list, tuple)):  # Moh_7596 unwrap per-vengine kv list
+        kv_cache = kv_cache[0]
     padded_kv = kv_cache.flatten(0, 1)[slot_mapping]
     # shape: [len(slot_mapping), num_heads, head_size]
     return padded_kv[:num_tokens]  # shape: [num_tokens, num_heads, head_size]

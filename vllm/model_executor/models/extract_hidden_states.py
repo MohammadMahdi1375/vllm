@@ -52,6 +52,8 @@ def unified_kv_cache_update(
     forward_context = get_forward_context()
     attn_layer = forward_context.no_compile_layers[layer_name]
     kv_cache = attn_layer.kv_cache
+    if isinstance(kv_cache, (list, tuple)):  # Moh_7596 unwrap per-vengine kv list
+        kv_cache = kv_cache[0]
 
     slot_mapping = forward_context.slot_mapping
     assert isinstance(slot_mapping, dict), (
@@ -218,6 +220,8 @@ class CacheOnlyAttentionImpl(AttentionImpl):
         assert to_cache.dtype == self.kv_cache_torch_dtype, (
             f"Data to cache must be {self.kv_cache_torch_dtype}, got {to_cache.dtype}"
         )
+        if isinstance(kv_cache, (list, tuple)):  # Moh_7596 unwrap per-vengine kv list
+            kv_cache = kv_cache[0]
         assert kv_cache.dtype == self.kv_cache_torch_dtype, (
             f"KV cache must be {self.kv_cache_torch_dtype}, got {kv_cache.dtype}"
         )
