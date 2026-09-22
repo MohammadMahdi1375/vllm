@@ -130,6 +130,18 @@ def update_dflash(config_dict: dict, pre_trained_config: dict) -> None:
     )
 
 
+@register_speculator("retrace")
+def update_retrace(config_dict: dict, pre_trained_config: dict) -> None:
+    update_dflash(config_dict, pre_trained_config)
+    pre_trained_config["architectures"] = ["ReTraceDraftModel"]
+    if config_dict.get("sample_from_anchor", False):
+        raise ValueError("ReTrace requires an unchanged anchor slot")
+    pre_trained_config["block_size"] = config_dict["block_size"]
+    pre_trained_config["retrace_enabled"] = config_dict.get("retrace_enabled", True)
+    pre_trained_config["retrace_beta_max"] = config_dict.get("retrace_beta_max", 1.0)
+    pre_trained_config["retrace_format_version"] = config_dict["retrace_format_version"]
+
+
 @register_speculator("dflash2")
 def update_dflash2(config_dict: dict, pre_trained_config: dict) -> None:
     """
@@ -213,3 +225,18 @@ def update_dspark(config_dict: dict, pre_trained_config: dict) -> None:
     ):
         if config_dict.get(key) is not None:
             pre_trained_config[key] = config_dict[key]
+
+
+@register_speculator("retrace_dspark")
+def update_retrace_dspark(config_dict: dict, pre_trained_config: dict) -> None:
+    update_dspark(config_dict, pre_trained_config)
+    if (
+        config_dict.get("retrace_backbone") != "dspark"
+        or config_dict.get("retrace_format_version") != 1
+        or not config_dict.get("sample_from_anchor")
+        or config_dict.get("markov_head_type") != "vanilla"
+    ):
+        raise ValueError("Unrecognized ReTrace-on-DSpARK checkpoint")
+    pre_trained_config["architectures"] = ["ReTraceDSparkDraftModel"]
+    for key in ("retrace_backbone", "retrace_format_version", "retrace_enabled", "retrace_beta_max"):
+        pre_trained_config[key] = config_dict[key]

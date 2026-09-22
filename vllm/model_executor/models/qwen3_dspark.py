@@ -41,16 +41,12 @@ logger = init_logger(__name__)
 
 
 class DSparkMarkovHead(nn.Module):
-    """Sequential transition-bias head (low-rank V x r, r x V).
+    """Sequential DSpark Markov head.
 
-    ``markov_w1[token]`` embeds the previously sampled token (target vocab,
-    ``vocab_size``); ``markov_w2`` projects it to a draft-vocab bias
-    (``draft_vocab_size``) added to the base draft logits. The two sizes
-    coincide for full-vocab drafts.
-
-    Both weights are replicated because the head runs sequentially for every
-    draft position. Sharding them would add an all-reduce and a full-vocab
-    gather to each position.
+    Mirrors the MarkovHead variants used by Speculators training:
+      * vanilla: first-order previous-token Markov bias
+      * gated: hidden-state-gated previous-token bias
+      * rnn: recurrent state across positions in a speculative block
     """
 
     def __init__(
@@ -60,9 +56,38 @@ class DSparkMarkovHead(nn.Module):
         markov_rank: int,
         prefix: str,
         quant_config: QuantizationConfig | None = None,
+        hidden_size: int | None = None,
+        head_type: str = "vanilla",
     ) -> None:
         super().__init__()
-        self.markov_w1 = nn.Embedding(vocab_size, markov_rank)
+
+        if markov_rank <= 0:
+            raise ValueError(
+                f"markov_rank must be > 0, got {markov_rank}"
+            )
+
+        if head_type not in ("vanilla", "gated", "rnn"):
+            raise ValueError(
+                f"Unsupported markov_head_type: {head_type!r}"
+            )
+
+        if head_type in ("gated", "rnn") and hidden_size is None:
+            raise ValueError(
+                f"hidden_size is required for markov_head_type={head_type!r}"
+            )
+
+        self.head_type = head_type
+        self.markov_rank = markov_rank
+        self.hidden_size = hidden_size
+
+        # Same previous-token embedding as Speculators.
+        self.markov_w1 = nn.Embedding(
+            vocab_size,
+            markov_rank,
+        )
+
+        # Rank -> draft-vocabulary logit bias.
+        # Preserve vLLM's existing ParallelLMHead implementation.
         self.markov_w2 = ParallelLMHead(
             draft_vocab_size,
             markov_rank,
@@ -72,17 +97,183 @@ class DSparkMarkovHead(nn.Module):
             disable_tp=True,
         )
 
-    def embed(self, token_ids: torch.Tensor) -> torch.Tensor:
-        """r-dim Markov embedding of ``token_ids`` ([B] -> [B, r])."""
-        return self.markov_w1(token_ids)
+        # Exact extra modules created by Speculators MarkovHead.
+        if head_type == "gated":
+            assert hidden_size is not None
+            self.gate_proj = nn.Linear(
+                hidden_size + markov_rank,
+                markov_rank,
+            )
+
+        elif head_type == "rnn":
+            assert hidden_size is not None
+
+            # Speculators:
+            #
+            # joint_proj(
+            #   [state(r), prev_emb(r), hidden(hidden_size)]
+            # )
+            # -> [gate_raw(r), cand_raw(r), out_raw(r)]
+            self.joint_proj = nn.Linear(
+                2 * markov_rank + hidden_size,
+                3 * markov_rank,
+            )
+
+    def embed(
+        self,
+        token_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """r-dimensional embedding of the previous token."""
+        return self.markov_w1(token_ids.long())
 
     def bias(
         self,
         markov_embed: torch.Tensor,
         logits_processor: LogitsProcessor,
     ) -> torch.Tensor:
-        """Vocab-size transition bias from a Markov embedding ([B, r] -> [B, V])."""
-        return logits_processor(self.markov_w2, markov_embed)
+        """Project a Markov representation to draft-vocabulary bias."""
+        return logits_processor(
+            self.markov_w2,
+            markov_embed,
+        )
+
+    def step(
+        self,
+        token_ids: torch.Tensor,
+        hidden_states: torch.Tensor,
+        state: torch.Tensor | None,
+        logits_processor: LogitsProcessor,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor | None,
+    ]:
+        """Run one sequential Markov-head position.
+
+        This is the inference equivalent of Speculators
+        MarkovHead.block_bias().
+
+        Returns:
+            logits_bias:
+                Bias to add to the current position's backbone logits.
+
+            prev_emb:
+                Previous-token embedding. Returned because this is also
+                the representation used by the trained confidence head.
+
+            state:
+                Updated recurrent state for RNN mode.
+        """
+
+        prev_emb = self.embed(token_ids)
+
+        # Exact training behavior:
+        # prev_emb = prev_emb.to(self.markov_w2.weight.dtype)
+        prev_emb = prev_emb.to(
+            self.markov_w2.weight.dtype
+        )
+
+        # ----------------------------------------------------
+        # vanilla
+        # ----------------------------------------------------
+        if self.head_type == "vanilla":
+            logits_bias = self.bias(
+                prev_emb,
+                logits_processor,
+            )
+            return logits_bias, prev_emb, state
+
+        hidden_states = hidden_states.to(
+            prev_emb.dtype
+        )
+
+        # ----------------------------------------------------
+        # gated
+        #
+        # gate = sigmoid(gate_proj([hidden, prev_emb]))
+        # bias = W2(gate * prev_emb)
+        # ----------------------------------------------------
+        if self.head_type == "gated":
+            gate = torch.sigmoid(
+                self.gate_proj(
+                    torch.cat(
+                        [
+                            hidden_states,
+                            prev_emb,
+                        ],
+                        dim=-1,
+                    )
+                )
+            )
+
+            logits_bias = self.bias(
+                gate * prev_emb,
+                logits_processor,
+            )
+
+            return logits_bias, prev_emb, state
+
+        # ----------------------------------------------------
+        # rnn
+        #
+        # This exactly matches:
+        #
+        # state = zeros(...)
+        #
+        # z = cat([state, prev_emb, hidden])
+        #
+        # gate_raw, cand_raw, out_raw =
+        #     joint_proj(z).chunk(3, dim=-1)
+        #
+        # gate = sigmoid(gate_raw)
+        #
+        # state =
+        #     gate * state
+        #     + (1-gate) * tanh(cand_raw)
+        #
+        # bias = W2(tanh(out_raw))
+        # ----------------------------------------------------
+
+        if state is None:
+            state = prev_emb.new_zeros(
+                prev_emb.shape[0],
+                self.markov_rank,
+            )
+        else:
+            state = state.to(prev_emb.dtype)
+
+        z = torch.cat(
+            [
+                state,
+                prev_emb,
+                hidden_states,
+            ],
+            dim=-1,
+        )
+
+        gate_raw, cand_raw, out_raw = (
+            self.joint_proj(z).chunk(
+                3,
+                dim=-1,
+            )
+        )
+
+        gate = torch.sigmoid(gate_raw)
+
+        state = (
+            gate * state
+            + (1.0 - gate)
+            * torch.tanh(cand_raw)
+        )
+
+        markov_output = torch.tanh(out_raw)
+
+        logits_bias = self.bias(
+            markov_output,
+            logits_processor,
+        )
+
+        return logits_bias, prev_emb, state
 
     def apply_bias_gathered(
         self,
@@ -92,21 +283,24 @@ class DSparkMarkovHead(nn.Module):
         index: torch.Tensor,
         scale: float = 1.0,
     ) -> torch.Tensor:
-        """Apply the Markov bias only to selected rows of ``logits``.
+        """Existing gathered W2 path used by vLLM."""
 
-        The caller initializes ``logits`` to ``-inf`` once for all draft
-        positions. This method scatters the corrected candidate values into
-        that dense buffer so the normal sampler sees the truncated proposal.
-        """
         weight = self.markov_w2.weight[index]
+
         corrected = values.unsqueeze(-1)
+
         corrected.baddbmm_(
             weight,
             markov_embed.unsqueeze(-1),
             beta=1.0,
             alpha=scale,
         )
-        return logits.scatter_(1, index, corrected.squeeze(-1))
+
+        return logits.scatter_(
+            1,
+            index,
+            corrected.squeeze(-1),
+        )
 
 
 class DSparkConfidenceHead(nn.Module):
@@ -160,6 +354,12 @@ class Qwen3DSparkModel(DFlashQwen3Model):
             config.markov_rank,
             prefix=maybe_prefix(prefix, "markov_head"),
             quant_config=self.quant_config,
+            hidden_size=config.hidden_size,
+            head_type=getattr(
+                config,
+                "markov_head_type",
+                "vanilla",
+            ),
         )
         self.confidence_head: DSparkConfidenceHead | None = None
         if getattr(config, "enable_confidence_head", False):
@@ -228,6 +428,25 @@ class Qwen3DSparkForCausalLM(DFlashQwen3ForCausalLM):
 
     def markov_bias(self, markov_embed: torch.Tensor) -> torch.Tensor:
         return self.model.markov_head.bias(markov_embed, self.logits_processor)
+
+    def markov_step(
+        self,
+        token_ids: torch.Tensor,
+        hidden_states: torch.Tensor,
+        state: torch.Tensor | None,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor | None,
+    ]:
+        """Run one sequential DSpark Markov-head step."""
+
+        return self.model.markov_head.step(
+            token_ids=token_ids,
+            hidden_states=hidden_states,
+            state=state,
+            logits_processor=self.logits_processor,
+        )
 
     def apply_markov_bias_gathered(
         self,

@@ -1258,6 +1258,7 @@ class SpeculativeConfig:
                     self.method = "dflash"
                 elif (
                     "dspark" in self.draft_model_config.model.lower()
+                    or "ReTraceDSparkDraftModel" in self.draft_model_config.architectures
                     or "Qwen3DSparkModel" in self.draft_model_config.architectures
                     or _QWEN3_OMNI_DSPARK_ARCHITECTURE
                     in self.draft_model_config.architectures
@@ -1334,6 +1335,7 @@ class SpeculativeConfig:
                     self.update_arch_()
                 elif self.method == "dspark" and (
                     "Qwen3DSparkModel" not in self.draft_model_config.architectures
+                    and "ReTraceDSparkDraftModel" not in self.draft_model_config.architectures
                     and _QWEN3_OMNI_DSPARK_ARCHITECTURE
                     not in self.draft_model_config.architectures
                     and "Gemma4DSparkModel" not in self.draft_model_config.architectures
