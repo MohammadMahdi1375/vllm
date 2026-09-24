@@ -240,3 +240,33 @@ def update_retrace_dspark(config_dict: dict, pre_trained_config: dict) -> None:
     pre_trained_config["architectures"] = ["ReTraceDSparkDraftModel"]
     for key in ("retrace_backbone", "retrace_format_version", "retrace_enabled", "retrace_beta_max"):
         pre_trained_config[key] = config_dict[key]
+
+
+@register_speculator("dflash_prefix")
+def update_dflash_prefix(config_dict: dict, pre_trained_config: dict) -> None:
+    update_dflash(config_dict, pre_trained_config)
+    pre_trained_config["architectures"] = ["DFlashPrefixDraftModel"]
+    cfg = pre_trained_config["dflash_config"]
+    cfg["prefix_rank"] = config_dict.get("prefix_rank", 64)
+    cfg["prefix_top_k"] = config_dict.get("prefix_top_k", 16)
+    cfg["prefix_gate_init"] = config_dict.get("prefix_gate_init", 0.1)
+    cfg["prefix_block_size"] = config_dict["block_size"]
+    cfg["prefix_walk_backend"] = config_dict.get("prefix_walk_backend", "torch")
+    cfg["prefix_selector_kind"] = config_dict.get("prefix_selector_kind", "legacy")
+    cfg["prefix_attention_heads"] = config_dict.get("prefix_attention_heads", 4)
+    cfg["prefix_attention_layers"] = config_dict.get("prefix_attention_layers", 2)
+    cfg["prefix_history_scale"] = config_dict.get("prefix_history_scale", 1.0)
+    scale = float(config_dict.get("prefix_inference_gate_scale", 1.0))
+    if not 0 <= scale <= 1:
+        raise ValueError("prefix_inference_gate_scale must be finite and in [0, 1]")
+    cfg["prefix_inference_gate_scale"] = scale
+    # Scale zero must use full-vocabulary argmax and skip selector overhead.
+    # topk(...)[..., 0] can select a different tied token from argmax().
+    cfg["prefix_disable_selector"] = (
+        bool(config_dict.get("prefix_disable_selector", False)) or scale == 0
+    )
+    # Speculators full-attention layers are always bidirectional. With causal
+    # sliding windows, let DFlash resolve causality from each layer's type.
+    pre_trained_config.pop("is_causal", None)
+    if not config_dict.get("sliding_window_non_causal", True):
+        cfg.pop("causal", None)

@@ -136,6 +136,6 @@ class SpeculatorsConfig(PretrainedConfig):
             result.update({"method": "eagle3", "parallel_drafting": True})
         elif result["method"] == "retrace_dspark":
             result["method"] = "dspark"
-        elif result["method"] == "dflash2":
+        elif result["method"] in {"dflash2", "dflash_prefix"}:
             result["method"] = "dflash"
         return result

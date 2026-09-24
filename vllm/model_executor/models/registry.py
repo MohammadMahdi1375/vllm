@@ -604,6 +604,7 @@ _SPECULATIVE_DECODING_MODELS = {
     "EagleLlama4ForCausalLM": ("llama4_eagle", "EagleLlama4ForCausalLM"),
     "EagleMiniCPMForCausalLM": ("minicpm_eagle", "EagleMiniCPMForCausalLM"),
     "DFlashDraftModel": ("qwen3_dflash", "DFlashQwen3ForCausalLM"),
+    "DFlashPrefixDraftModel": ("qwen3_dflash_prefix", "DFlashPrefixQwen3ForCausalLM"),
     "ReTraceDSparkDraftModel": ("qwen3_retrace_dspark", "ReTraceDSparkQwen3ForCausalLM"),
     "ReTraceDraftModel": ("qwen3_retrace", "ReTraceQwen3ForCausalLM"),
     "DFlash2DraftModel": ("qwen3_dflash2", "DFlash2Qwen3ForCausalLM"),
