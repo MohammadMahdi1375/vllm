@@ -256,6 +256,7 @@ def update_dflash_prefix(config_dict: dict, pre_trained_config: dict) -> None:
     cfg["prefix_attention_heads"] = config_dict.get("prefix_attention_heads", 4)
     cfg["prefix_attention_layers"] = config_dict.get("prefix_attention_layers", 2)
     cfg["prefix_history_scale"] = config_dict.get("prefix_history_scale", 1.0)
+    cfg["prefix_compiled_logit_cap"] = config_dict.get("prefix_compiled_logit_cap", 8.0)
     scale = float(config_dict.get("prefix_inference_gate_scale", 1.0))
     if not 0 <= scale <= 1:
         raise ValueError("prefix_inference_gate_scale must be finite and in [0, 1]")

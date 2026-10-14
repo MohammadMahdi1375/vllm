@@ -24,6 +24,7 @@ class DFlashPrefixQwen3Model(DFlashQwen3Model):
             heads=cfg.get("prefix_attention_heads", 4),
             layers=cfg.get("prefix_attention_layers", 2),
             history_scale=cfg.get("prefix_history_scale", 1.0),
+            compiled_logit_cap=cfg.get("prefix_compiled_logit_cap", 8.0),
         )
 
 
@@ -60,7 +61,9 @@ class DFlashPrefixQwen3ForCausalLM(DFlashQwen3ForCausalLM):
 
     def compute_candidates(self, hidden_states):
         logits = super().compute_logits(hidden_states)
-        if self.config.dflash_config.get("prefix_selector_kind") == "local_prefix_v2":
+        if self.config.dflash_config.get("prefix_selector_kind") in {
+            "local_prefix_v2", "compiled_prefix_v3"
+        }:
             values, ids = unary_topk(logits, self.config.dflash_config["prefix_top_k"])
             return ids, values
         values, ids = logits.topk(self.config.dflash_config["prefix_top_k"], dim=-1)
